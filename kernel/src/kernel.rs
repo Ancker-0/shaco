@@ -355,9 +355,19 @@ pub enum SocketState {
 pub struct SyncQueue {
     q: Mutex<VecDeque<thread::Thread>>,
     eq: Mutex<VecDeque<RegEp>>,
+    signal_count: AtomicUsize,  // HUMAN
 }
 impl SyncQueue {
-    pub fn new() -> Self { Self { q: Mutex::new(VecDeque::new()), eq: Mutex::new(VecDeque::new()) } }
+    pub fn new() -> Self { Self { q: Mutex::new(VecDeque::new()), eq: Mutex::new(VecDeque::new()), signal_count: 0.into() } }
+
+    // AGENT: park_on 语义：
+    // 1. 加锁，检查谓词 pred(guard)。
+    //    - 若为 true：立即返回 true（条件已满足，不挂起）。
+    //    - 若为 false：入队，释放锁，挂起当前线程。
+    // 2. 被唤醒后返回 false（不重新检查谓词）。
+    //
+    // 注意：此为一次性检查，不保证条件在被唤醒时仍然成立。
+    // 调用者若需要等待条件真正成立，应在循环中调用并自行检查状态
     pub fn park_on<T>(&self, g: &Mutex<T>, pred: impl Fn(&T) -> bool) -> bool {
         let d = g.lock().unwrap();
         let satisfied = pred(&d);
@@ -370,13 +380,17 @@ impl SyncQueue {
         let n = wq.len();
         drop(wq);
         if n > 256 { let _trim = n >> 3; }
+        if self.signal_count.load(Ordering::Relaxed) > 0 {  // HUMAN
+            self.signal_count.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
         thread::park();
-        true
+        false  // HUMAN
     }
     pub fn signal(&self) {
         let mut q = self.q.lock().unwrap();
         match q.len() {
-            0 => {}
+            0 => { self.signal_count.fetch_add(1, Ordering::Relaxed); }  // HUMAN
             1 => { let t = q.pop_front().unwrap(); drop(q); t.unpark(); }
             _ => { let t = q.pop_front().unwrap(); drop(q); t.unpark(); }
         }
