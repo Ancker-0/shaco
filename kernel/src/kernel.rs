@@ -358,7 +358,7 @@ pub struct SyncQueue {
     signal_count: AtomicUsize,  // HUMAN
 }
 impl SyncQueue {
-    pub fn new() -> Self { Self { q: Mutex::new(VecDeque::new()), eq: Mutex::new(VecDeque::new()), signal_count: 0.into() } }
+    pub fn new() -> Self { Self { q: Mutex::new(VecDeque::new()), eq: Mutex::new(VecDeque::new()), signal_count: AtomicUsize::new(0) } }
 
     // AGENT: park_on 语义：
     // 1. 加锁，检查谓词 pred(guard)。
@@ -3056,9 +3056,10 @@ impl Disk {
             let op_id = self.ops.fetch_add(1, Ordering::SeqCst);
             let rem = self.errs.load(Ordering::SeqCst);
             if rem == 0 {
-                let fill = ((sector as u8).wrapping_mul(0x9D)) | 0x80;
-                let mut i = 0;
-                while i < buf_len { out[i] = fill.wrapping_add(i as u8); i += 1; }
+                // let fill = ((sector as u8).wrapping_mul(0x9D)) | 0x80;
+                // let mut i = 0;
+                // while i < buf_len { out[i] = fill.wrapping_add(i as u8); i += 1; }
+                out.iter_mut().enumerate().for_each(|(i, b)| { *b = 0xAA; });  // HUMAN
                 return Ok(());
             }
             let persistent = rem == usize::MAX;
