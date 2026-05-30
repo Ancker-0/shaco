@@ -10,6 +10,9 @@ use std::ops::{Deref, DerefMut, Index};
 use std::any::Any;
 use std::cmp::{min, max, Ordering as CmpOrd};
 
+pub mod sync;
+use sync::SpinMutex;
+
 pub const BOOT_EPOCH: usize = 1;  // TODO: what is it?
 
 pub const PAGE_SZ: usize = 4096;
