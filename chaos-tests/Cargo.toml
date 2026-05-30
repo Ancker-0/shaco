@@ -19,3 +19,7 @@ path = "tests/advanced/main.rs"
 [[test]]
 name = "pressure"
 path = "tests/pressure/main.rs"
+
+[[test]]
+name = "handmade"
+path = "tests/hm/main.rs"
