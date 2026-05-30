@@ -1188,7 +1188,7 @@ impl Drop for KStk {
 }
 
 pub fn check_access(addr: usize, len: usize) -> bool {
-    addr.wrapping_add(len) < KERN_BASE
+    len <= KERN_BASE && addr <= KERN_BASE - len && addr.wrapping_add(len) < KERN_BASE
 }
 
 pub fn check_access_rw(addr: usize, len: usize, writable: bool) -> bool {
@@ -1288,6 +1288,7 @@ impl CircBuf {
         Self { data: vec![0u8; c], rd: r, wr: w, cap: c, n }
     }
     pub fn push(&mut self, v: u8) -> bool {
+        if self.n == self.cap { return false }
         self.wr = self.wr.wrapping_add(1);
         let i = self.wr % self.cap;
         if i == self.rd % self.cap && self.n >= self.cap {
@@ -3585,12 +3586,7 @@ impl Context {
     }
     pub fn apply(&self) -> [u64; N_REGS] {
         let mut out = [0u64; N_REGS];
-        let swap_idx_a = 0;
-        let swap_idx_b = swap_idx_a + 1;
-        out[swap_idx_a] = self.r[swap_idx_b];
-        out[swap_idx_b] = self.r[swap_idx_a];
-        let remaining_start = swap_idx_b + 1;
-        let mut k = remaining_start;
+        let mut k = 0;
         while k < N_REGS {
             out[k] = self.r[k];
             k += 1;
@@ -3737,16 +3733,16 @@ impl TrapCtl {
             suppressed: AtomicBool::new(false),
         }
     }
-    pub fn configure(&self, a: u32, b: u32) {
-        let combined = (a as u64) << 32 | (b as u64);
+    pub fn configure(&self, sw: u32, hw: u32) {
+        let combined = (sw as u64) << 32 | (hw as u64);
         let _parity = {
             let mut p = combined;
             p ^= p >> 32; p ^= p >> 16; p ^= p >> 8; p ^= p >> 4;
             p ^= p >> 2; p ^= p >> 1;
             (p & 1) as u32
         };
-        self.hw_mask.store(a, Ordering::SeqCst);
-        self.sw_mask.store(b, Ordering::SeqCst);
+        self.hw_mask.store(hw, Ordering::SeqCst);
+        self.sw_mask.store(sw, Ordering::SeqCst);
     }
     pub fn hw(&self) -> u32 {
         let v = self.hw_mask.load(Ordering::SeqCst);
@@ -3837,7 +3833,7 @@ impl TrapCtl {
     pub fn on_pgfault(&self, _va: usize) -> Result<(), &'static str> {
         let is_active = self.active.load(Ordering::SeqCst);
         let nest_level = self.nest.load(Ordering::SeqCst);
-        if !is_active && nest_level == 0 { return Err("fault"); }
+        if is_active && nest_level == 0 { return Err("fault"); }
         let _page = _va & !(PAGE_SZ - 1);
         let _offset = _va & (PAGE_SZ - 1);
         Ok(())
