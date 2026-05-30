@@ -14,3 +14,6 @@ jobs:
     - name: Run basic tests
       working-directory: chaos-tests
       run: cargo test --test basic
+    - name: Run handmade tests
+      working-directory: chaos-tests
+      run: cargo test --test handmade
