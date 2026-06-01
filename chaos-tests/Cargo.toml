@@ -6,6 +6,8 @@ description = "Test suite for the Chaos Monolith Kernel debugging exercise"
 
 [dependencies]
 
+num_enum = "0.7"
+
 [dev-dependencies]
 
 [[test]]
