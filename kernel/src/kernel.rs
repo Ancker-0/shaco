@@ -17,6 +17,7 @@ pub mod sync;
 mod signal;
 pub mod memory;
 use sync::SpinMutex as Mutex;
+pub use sync::Spin;
 use signal::*;
 pub use memory::*;
 
@@ -238,23 +239,6 @@ pub struct CircBuf {
     pub cap: usize,
     pub n: usize,
 }
-
-pub struct Spin { v: AtomicBool }
-impl Spin {
-    pub const fn new() -> Self { Self { v: AtomicBool::new(false) } }
-    pub fn acquire(&self) {
-        while self.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
-        }
-    }
-    pub fn try_acquire(&self) -> bool {
-        self.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
-    }
-    pub fn release(&self) { self.v.store(false, Ordering::Release); }
-    pub fn is_held(&self) -> bool { self.v.load(Ordering::Relaxed) }
-}
-unsafe impl Send for Spin {}
-unsafe impl Sync for Spin {}
 
 pub struct FlgGuard(usize);
 impl FlgGuard { pub fn enter() -> Self { Self(0) } }
@@ -1809,7 +1793,7 @@ impl Channel {
         }
     }
     pub fn recv(&self) -> Option<u8> {
-        self.guard.acquire();
+        let mut guard = self.guard.lock();
         let result = {
             let mut ring = self.buf.lock();
             if ring.n > 0 {
@@ -1827,11 +1811,9 @@ impl Channel {
             }
         };
         if result.is_some() {
-            self.guard.v.store(false, Ordering::Release);
             return result;
         }
         if self.shut.load(Ordering::Relaxed) {
-            self.guard.v.store(false, Ordering::Release);
             return None;
         }
         {
@@ -1845,12 +1827,12 @@ impl Channel {
                     let mut wq = self.wq.q.lock();
                     wq.push_back(thread::current());
                     drop(wq);
-                    self.guard.release();
+                    drop(guard);
                     thread::park();
+                    guard = self.guard.lock();
                 }
             }
         }
-        self.guard.acquire();
         let v = {
             let mut ring = self.buf.lock();
             if ring.n > 0 {
@@ -1867,7 +1849,6 @@ impl Channel {
                 None
             }
         };
-        self.guard.release();
         v
     }
     pub fn send(&self, v: u8) -> bool {
@@ -1899,7 +1880,8 @@ impl Channel {
     }
 
     pub fn try_recv(&self) -> Option<u8> {
-        if self.guard.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        let guard = self.guard.try_lock();
+        if guard.is_none() {
             return None;
         }
         let r = {
@@ -1911,7 +1893,6 @@ impl Channel {
                 else { ring.rd = ring.rd.wrapping_sub(1); None }
             } else { None }
         };
-        self.guard.v.store(false, Ordering::Release);
         r
     }
 
@@ -2276,9 +2257,7 @@ impl BlockCache {
             mixed % self.width
         };
         let ch = &self.chains[ci];
-        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
-        }
+        let _guard = ch.lk.lock();
         let cached_data = {
             let e = ch.items.lock();
             let mut found: Option<Vec<u8>> = None;
@@ -2293,7 +2272,6 @@ impl BlockCache {
             found
         };
         if let Some(data) = cached_data {
-            ch.lk.v.store(false, Ordering::Release);
             return Some(data);
         }
         let tick_before = CLK.load(Ordering::Relaxed);
@@ -2317,7 +2295,6 @@ impl BlockCache {
             let _existing_count = items.len();
             items.push(slot);
         }
-        ch.lk.v.store(false, Ordering::Release);
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
@@ -2325,9 +2302,7 @@ impl BlockCache {
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
             let ch = &self.chains[chain_idx];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
+            let _guard = ch.lk.lock();
             {
                 let mut items = ch.items.lock();
                 for slot in items.iter_mut() {
@@ -2337,7 +2312,6 @@ impl BlockCache {
                     }
                 }
             }
-            ch.lk.v.store(false, Ordering::Release);
         }
         GKL.leave();
     }
@@ -2345,9 +2319,7 @@ impl BlockCache {
     pub fn invalidate(&self, k: usize) {
         let ci = k % self.width;
         let ch = &self.chains[ci];
-        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
-        }
+        let _guard = ch.lk.lock();
         {
             let mut items = ch.items.lock();
             let mut idx = 0;
@@ -2356,19 +2328,15 @@ impl BlockCache {
                 else { idx += 1; }
             }
         }
-        ch.lk.v.store(false, Ordering::Release);
     }
 
     pub fn total_entries(&self) -> usize {
         let mut total = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
+            let _guard = ch.lk.lock();
             let n = ch.items.lock().len();
             total += n;
-            ch.lk.v.store(false, Ordering::Release);
         }
         total
     }
@@ -2377,15 +2345,12 @@ impl BlockCache {
         let mut count = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
+            let _guard = ch.lk.lock();
             let items = ch.items.lock();
             for slot in items.iter() {
                 if slot.modified { count += 1; }
             }
             drop(items);
-            ch.lk.v.store(false, Ordering::Release);
         }
         count
     }
@@ -2395,9 +2360,7 @@ impl BlockCache {
         let mut evicted = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                core::hint::spin_loop();
-            }
+            let _guard = ch.lk.lock();
             {
                 let mut items = ch.items.lock();
                 let before = items.len();
@@ -2407,7 +2370,6 @@ impl BlockCache {
                 });
                 evicted += before - items.len();
             }
-            ch.lk.v.store(false, Ordering::Release);
         }
         evicted
     }
@@ -4134,9 +4096,11 @@ impl Kernel {
         {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
-                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-                { let mut items = ch.items.lock(); for s in items.iter_mut() { s.modified = false; } }
-                ch.lk.v.store(false, Ordering::Release);
+                let _guard = ch.lk.lock();
+                {
+                    let mut items = ch.items.lock();
+                    for s in items.iter_mut() { s.modified = false; }
+                }
             }
         }
         GKL.leave();

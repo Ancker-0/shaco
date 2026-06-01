@@ -1,8 +1,8 @@
 // HUMAN
 #![no_std]
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub type SpinLock<T> = SpinMutex<T>;
 pub type SpinNoIrqLock<T> = SpinMutex<T>;
@@ -29,11 +29,24 @@ impl<T> SpinMutex<T> {
         }
     }
 
-    pub fn lock(&self) -> SpinMutexGuard<'_, T> {
-        while self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            // core::hint::spin_loop();
+    fn obtain_lock(&self) {
+        while self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::sync::atomic::spin_loop_hint()
         }
+    }
+
+    fn try_obtain_lock(&self) -> bool {
+        self.lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    pub fn lock(&self) -> SpinMutexGuard<'_, T> {
+        self.obtain_lock();
         SpinMutexGuard { mutex: self }
     }
 
@@ -42,7 +55,10 @@ impl<T> SpinMutex<T> {
     }
 
     pub fn try_lock(&self) -> Option<SpinMutexGuard<'_, T>> {
-        match (self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)) {
+        match (self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed))
+        {
             Ok(_) => Some(SpinMutexGuard { mutex: self }),
             Err(_) => None,
         }
@@ -71,3 +87,30 @@ impl<T> DerefMut for SpinMutexGuard<'_, T> {
         unsafe { &mut *self.mutex.value.get() }
     }
 }
+
+pub struct Spin(SpinMutex<()>);
+impl Spin {
+    pub const fn new() -> Self {
+        Self(SpinMutex::new(()))
+    }
+    pub fn acquire(&self) {
+        self.0.obtain_lock()
+    }
+    pub fn try_acquire(&self) -> bool {
+        self.0.try_obtain_lock()
+    }
+    pub fn release(&self) {
+        self.0.unlock();
+    }
+    pub fn is_held(&self) -> bool {
+        self.0.is_lock()
+    }
+    pub fn lock(&self) -> SpinMutexGuard<'_, ()> {
+        self.0.lock()
+    }
+    pub fn try_lock(&self) -> Option<SpinMutexGuard<'_, ()>> {
+        self.0.try_lock()
+    }
+}
+unsafe impl Send for Spin {}
+unsafe impl Sync for Spin {}
