@@ -1,5 +1,7 @@
 // HUMAN
 
+mod action;
+use action::*;
 use num_enum::TryFromPrimitive;
 
 pub const NSIG: u32 = 64;
@@ -53,21 +55,6 @@ impl Sigset {
             Signal::try_from(sig_num).ok()
         }
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum SigHandler {
-    SIG_DFL,
-    SIG_IGN,
-    Handler(usize),
-}
-pub use SigHandler::{SIG_DFL, SIG_IGN};
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct SigAction {
-    pub handler: SigHandler,
-    pub flags: u32,
-    pub mask: u64,
 }
 
 pub struct SigConfig {
