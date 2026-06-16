@@ -131,8 +131,6 @@ unsafe impl Sync for Spin {}
 use SpinMutex as Mutex;
 
 // ===================== signal (inlined from src/signal/) =====================
-use bitflags::*;
-
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum SigHandler {
     SIG_DFL,
@@ -148,26 +146,11 @@ pub struct SigAction {
     pub mask: u64,
 }
 
-bitflags! {
-    pub struct SignalActionFlags : usize {
-        const NOCLDSTOP = 1;
-        const NOCLDWAIT = 2;
-        const SIGINFO = 4;
-        const ONSTACK = 0x08000000;
-        const RESTART = 0x10000000;
-        const NODEFER = 0x40000000;
-        const RESETHAND = 0x80000000;
-        const RESTORER = 0x04000000;
-    }
-}
-
 // HUMAN
-
-use num_enum::TryFromPrimitive;
 
 pub const NSIG: u32 = 64;
 
-#[derive(TryFromPrimitive, Clone, Copy)]
+#[derive(Clone, Copy)]
 #[repr(u32)]
 pub enum Signal {
     SIGKILL = 9,
@@ -182,6 +165,21 @@ pub use Signal::*;
 impl Signal {
     pub fn mask(self) -> u64 {
         1u64 << (self as u32)
+    }
+}
+
+impl TryFrom<u32> for Signal {
+    type Error = ();
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        match v {
+            9 => Ok(SIGKILL),
+            10 => Ok(SIGUSR1),
+            12 => Ok(SIGUSR2),
+            14 => Ok(SIGALRM),
+            17 => Ok(SIGCHLD),
+            19 => Ok(SIGSTOP),
+            _ => Err(()),
+        }
     }
 }
 
@@ -930,6 +928,7 @@ impl KernLock {
         Self { flag: AtomicBool::new(false), holders: Mutex::new(Vec::new()) }
     }
     pub fn enter(&self, id: usize) {
+        print!("Entered {}\n", id);
         loop {
             let mut holders = self.holders.lock();
             if *holders.last().unwrap_or(&0) <= id {
