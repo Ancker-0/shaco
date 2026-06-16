@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chaos_tests::sync::SpinMutex;
+use chaos_tests::SpinMutex;
 
 // COPIED from chaos-tests/tests/basic/group_01.rs
 fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
