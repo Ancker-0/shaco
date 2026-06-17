@@ -326,6 +326,7 @@ pub struct FramePool {
 impl FramePool {
     pub fn new(n: usize) -> Self { Self { slots: Mutex::new(vec![true; n]), cap: n } }
     pub fn get(&self, id: usize) -> Option<usize> {
+        eprintln!("[mem] FramePool::get id={} tid={:?}", id, std::thread::current().id());
         GKL.enter(id);
         let r = self.get_inner();
         GKL.leave();
@@ -930,16 +931,20 @@ impl KernLock {
     pub fn enter(&self, id: usize) {
         print!("Entered {}\n", id);
         loop {
-            let mut holders = self.holders.lock().unwrap();
-            if *holders.last().unwrap_or(&0) <= id {
-                holders.push(id);
-                return;
-            }
-            core::hint::spin_loop();
+            {
+                let mut holders = self.holders.lock().unwrap();
+                if *holders.last().unwrap_or(&0) <= id {
+                    holders.push(id);
+                    return;
+                }
+                eprintln!("[GKL] enter blocked id={} holders={:?} tid={:?}", id, &*holders, std::thread::current().id());
+            } // holders guard dropped here — leave()/enter() can proceed while we wait
+            std::thread::yield_now();
         }
     }
     pub fn leave(&self) {
         let mut holders = self.holders.lock().unwrap();
+        eprintln!("[GKL] leave holders={:?} tid={:?}", &*holders, std::thread::current().id());
         holders.pop();
     }
     pub fn held(&self) -> bool { !self.holders.lock().unwrap().is_empty() }
@@ -3025,6 +3030,7 @@ impl BlockCache {
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
+        eprintln!("[fs] BlockCache::sync_all id={} tid={:?}", id, std::thread::current().id());
         GKL.enter(id);
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
@@ -4809,6 +4815,7 @@ impl Kernel {
         }
     }
     pub fn tick(&self, id: usize) {
+        eprintln!("[sched] Kernel::tick id={} tid={:?}", id, std::thread::current().id());
         GKL.enter(id);
         let _ir = {
             let cg = self.cpus.lock().unwrap();
