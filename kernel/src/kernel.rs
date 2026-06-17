@@ -937,7 +937,12 @@ impl KernLock {
                     holders.push(id);
                     return;
                 }
-                eprintln!("[GKL] enter blocked id={} holders={:?} tid={:?}", id, &*holders, std::thread::current().id());
+                let mut seen = BLK_SEEN.lock().unwrap();
+                if !seen.contains(&id) {
+                    seen.push(id);
+                    eprintln!("[GKL] enter blocked id={} holders={:?} tid={:?}", id, &*holders, std::thread::current().id());
+                }
+                drop(seen);
             } // holders guard dropped here — leave()/enter() can proceed while we wait
             std::thread::yield_now();
         }
@@ -962,6 +967,7 @@ impl KernLock {
 }
 unsafe impl Send for KernLock {}
 unsafe impl Sync for KernLock {}
+static BLK_SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 pub static GKL: KernLock = KernLock::new();
 
 pub struct CircBuf {
