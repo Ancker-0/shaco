@@ -13,7 +13,7 @@ jobs:
         workspaces: chaos-tests
     - name: Run basic tests
       working-directory: chaos-tests
-      run: cargo test --test basic
+      run: cargo test --test basic -- --test-threads 1
     - name: Run handmade tests
       working-directory: chaos-tests
       run: cargo test --test handmade
