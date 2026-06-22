@@ -8,6 +8,7 @@ description = "Test suite for the Chaos Monolith Kernel debugging exercise"
 
 num_enum = "0.7"
 bitflags = "1.2"
+log = "0.4"
 
 [dev-dependencies]
 

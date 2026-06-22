@@ -3,6 +3,12 @@
 mod action;
 use action::*;
 use num_enum::TryFromPrimitive;
+// use crate::process::Process;
+use crate::sync::SpinMutex as Mutex;
+use alloc::sync::Arc;
+use log::info;
+mod context;
+use context::MachineContext;
 
 pub const NSIG: u32 = 64;
 
@@ -60,12 +66,12 @@ impl Sigset {
 pub struct SigConfig {
     pub pending: Sigset,
     pub blocked: Sigset,
-    pub actions: [SigAction; NSIG as usize],
+    pub actions: [SignalAction; NSIG as usize],
 }
 
 impl SigConfig {
     pub fn new() -> Self {
-        let actions = [SigAction {
+        let actions = [SignalAction {
             handler: SigHandler::SIG_DFL,
             flags: 0,
             mask: 0,
@@ -118,13 +124,13 @@ impl SigConfig {
         self.coalesce_pending().one().map(|sig| sig as u32)
     }
 
-    pub fn set_action(&mut self, signo: u32, action: SigAction) {
+    pub fn set_action(&mut self, signo: u32, action: SignalAction) {
         if signo < NSIG as u32 && signo != SIGKILL as u32 && signo != SIGSTOP as u32 {
             self.actions[signo as usize] = action;
         }
     }
 
-    pub fn get_action(&self, signo: u32) -> &SigAction {
+    pub fn get_action(&self, signo: u32) -> &SignalAction {
         if (signo as usize) < self.actions.len() {
             &self.actions[signo as usize]
         } else {
@@ -147,4 +153,48 @@ impl SigConfig {
             }
         }
     }
+}
+
+// // FROM rCore
+// // process and tid must be checked
+// pub fn send_signal(process: Arc<Mutex<Process>>, tid: isize, info: Siginfo) {
+//     let signal: Signal = <Signal as FromPrimitive>::from_i32(info.signo).unwrap();
+//     let mut process = process.lock();
+//     if signal.is_standard() && process.pending_sigset.contains(signal) {
+//         return;
+//     }
+//     process.sig_queue.push_back((info, tid));
+//     process.pending_sigset.add(signal);
+//     process.eventbus.lock().set(Event::RECEIVE_SIGNAL);
+//     info!(
+//         "send signal {} to pid {} tid {}",
+//         info.signo, process.pid, tid
+//     )
+// }
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct SignalUserContext {
+    pub flags: usize,
+    pub link: usize,
+    pub stack: SignalStack,
+    pub context: MachineContext,
+    pub sig_mask: Sigset,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct SignalFrame {
+    pub ret_code_addr: usize, // point to ret_code
+    pub info: Siginfo,
+    pub ucontext: SignalUserContext,
+    pub ret_code: [u8; 7],           // call sys_sigreturn
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct SignalStack {
+    pub sp: usize,
+    pub flags: u32,
+    pub size: usize,
 }
