@@ -1,14 +1,15 @@
 // HUMAN
 
 mod action;
-use action::*;
+pub use action::*;
 use num_enum::TryFromPrimitive;
 // use crate::process::Process;
-use crate::sync::SpinMutex as Mutex;
+use crate::{EvFlag, Task, sync::SpinMutex as Mutex};
 use alloc::sync::Arc;
 use log::info;
 mod context;
 use context::MachineContext;
+use std::thread;
 
 pub const NSIG: u32 = 64;
 
@@ -33,6 +34,10 @@ impl Signal {
 #[repr(C)]
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Sigset(u64);
+
+impl From<u64> for Sigset {
+    fn from(u: u64) -> Sigset { Sigset(u) }
+}
 
 impl Sigset {
     pub fn empty() -> Self {
@@ -155,22 +160,26 @@ impl SigConfig {
     }
 }
 
-// // FROM rCore
-// // process and tid must be checked
-// pub fn send_signal(process: Arc<Mutex<Process>>, tid: isize, info: Siginfo) {
-//     let signal: Signal = <Signal as FromPrimitive>::from_i32(info.signo).unwrap();
-//     let mut process = process.lock();
-//     if signal.is_standard() && process.pending_sigset.contains(signal) {
-//         return;
-//     }
-//     process.sig_queue.push_back((info, tid));
-//     process.pending_sigset.add(signal);
-//     process.eventbus.lock().set(Event::RECEIVE_SIGNAL);
-//     info!(
-//         "send signal {} to pid {} tid {}",
-//         info.signo, process.pid, tid
-//     )
-// }
+// FROM rCore, HUMAN modified
+// process and tid must be checked
+pub fn send_signal(task: Arc<Mutex<Task>>, tid: isize, info: Siginfo) {
+    let signal: Result<Signal, _> = (info.signo as u32).try_into();
+    let mut task = task.lock();
+
+    // in Chaos we only deal with standard signals,
+    // which means we only need to consider the set of signals,
+    // and the order they come is irrelevant.
+    if signal.is_ok_and(|sig| task.contains_sig(sig)) {
+        return;
+    }
+    task.sig_queue.lock().push_back((info, tid));
+    signal.inspect(|sig| task.sig_mask.lock().add(*sig));
+    task.ev.lock().set(EvFlag::RECV_SIG);
+    info!(
+        "send signal {} to pid {} tid {}",
+        info.signo, *task.pid.lock(), tid
+    )
+}
 
 #[repr(C)]
 #[derive(Clone)]

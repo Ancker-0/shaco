@@ -12,6 +12,7 @@ use std::fmt;
 use std::ops::{Deref, DerefMut, Index};
 use std::any::Any;
 use std::cmp::{min, max, Ordering as CmpOrd};
+use log::info;
 
 pub mod sync;
 mod signal;
@@ -20,6 +21,7 @@ use sync::SpinMutex as Mutex;
 pub use sync::Spin;
 use signal::*;
 pub use memory::*;
+// pub mod process;
 
 pub const BOOT_EPOCH: usize = 1;  // TODO: what is it?
 
@@ -32,7 +34,7 @@ pub const MEM_OFF: usize = 0x8000_0000;
 pub const KHEAP_SZ: usize = 0x800000;
 pub const N_CHAINS: usize = 64;
 pub const RBUF_CAP: usize = 256;
-pub const N_REGS: usize = 16;
+pub const N_REGS: usize = 32;
 pub const MNT_DEPTH: usize = 8;
 pub const MAX_CPU: usize = 8;
 pub const KSTK_SZ: usize = 0x4000;
@@ -3613,11 +3615,11 @@ pub struct TaskInfo {
 pub struct ThdCtx {
     pub uctx: Context,
     pub clear_tid: usize,
-    pub smask: u64,
+    pub smask: Sigset,
 }
 impl Default for ThdCtx {
     fn default() -> Self {
-        Self { uctx: Context::new(), clear_tid: 0, smask: 0 }
+        Self { uctx: Context::new(), clear_tid: 0, smask: Sigset::empty() }
     }
 }
 
@@ -3636,8 +3638,8 @@ pub struct Task {
     pub threads: Mutex<Vec<Tid>>,
     pub ev: Arc<Mutex<EvBus>>,
     pub exit_code: Mutex<usize>,
-    pub sig_queue: Mutex<VecDeque<(i32, isize)>>,
-    pub sig_mask: Mutex<u64>,
+    pub sig_queue: Mutex<VecDeque<(Siginfo, isize)>>,
+    pub sig_mask: Mutex<Sigset>,
     pub ep_inst: Mutex<BTreeMap<usize, EpInst>>,
     pub kstk: Mutex<Option<KStk>>,
     pub thd_ctx: Mutex<Option<ThdCtx>>,
@@ -3663,7 +3665,7 @@ impl Task {
             ev: EvBus::make(),
             exit_code: Mutex::new(0),
             sig_queue: Mutex::new(VecDeque::new()),
-            sig_mask: Mutex::new(0),
+            sig_mask: Mutex::new(Sigset::empty()),
             ep_inst: Mutex::new(BTreeMap::new()),
             kstk: Mutex::new(None),
             thd_ctx: Mutex::new(Some(ThdCtx::default())),
@@ -3780,31 +3782,40 @@ impl Task {
         let mut g = self.thd_ctx.lock();
         *g = Some(cx);
     }
-    pub fn has_sig(&self) -> bool {
-        let sq = self.sig_queue.lock();
-        if sq.is_empty() { return false; }
-        let sm = *self.sig_mask.lock();
-        let tid = self.id();
-        let mut found = false;
-        for (sig, sender) in sq.iter() {
-            let s = *sig;
-            let snd = *sender;
-            if snd != -1 && snd as usize != tid { continue; }
-            let bit = if s >= 0 && (s as u32) < 64 { 1u64 << (s as u64) } else { 0 };
-            if bit != 0 && (sm & bit) == 0 { found = true; break; }
-        }
-        found
-    }
+    // don't know what is it doing...
+    // pub fn has_sig(&self) -> bool {}
+    pub fn contains_sig(&self, sig: Signal) -> bool { self.sig_mask.lock().contains(sig) }
 
     pub fn send_sig(&self, signo: i32, sender_tid: isize) {
-        let mut sq = self.sig_queue.lock();
-        let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
-        sq.push_back((signo, sender_tid));
-        drop(sq);
-        let mut bus = self.ev.lock();
-        let o = bus.ev;
-        bus.ev |= EvFlag::RECV_SIG;
-        if bus.ev != o { let ev = bus.ev; bus.cbs.retain(|f| !f(ev)); }
+        self.send_signal(sender_tid, Siginfo { signo, errno: 0, code: 0 });
+        // let mut sq = self.sig_queue.lock();
+        // let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
+        // sq.push_back((signo, sender_tid));
+        // drop(sq);
+        // let mut bus = self.ev.lock();
+        // let o = bus.ev;
+        // bus.ev |= EvFlag::RECV_SIG;
+        // if bus.ev != o { let ev = bus.ev; bus.cbs.retain(|f| !f(ev)); }
+    }
+
+    // FROM rCore, HUMAN modified
+    // process and tid must be checked
+    pub fn send_signal(&self, tid: isize, info: Siginfo) {
+        let signal: Result<Signal, _> = (info.signo as u32).try_into();
+
+        // in Chaos we only deal with standard signals,
+        // which means we only need to consider the set of signals,
+        // and the order they come is irrelevant.
+        if signal.is_ok_and(|sig| self.contains_sig(sig)) {
+            return;
+        }
+        self.sig_queue.lock().push_back((info, tid));
+        signal.inspect(|sig| self.sig_mask.lock().add(*sig));
+        self.ev.lock().set(EvFlag::RECV_SIG);
+        info!(
+            "send signal {} to pid {} tid {}",
+            info.signo, *self.pid.lock(), tid
+        )
     }
 
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
@@ -4062,6 +4073,7 @@ pub struct Kernel {
     pub tasks: TaskTable,
     pub cache: BlockCache,
     pub pool: FramePool,
+    // TODO: 
     pub cpus: Mutex<[Option<Arc<Task>>; MAX_CPU]>,
     pub mnt: MountTable,
     pub sem_store: RwLock<BTreeMap<u32, Weak<SemArr>>>,
@@ -4921,6 +4933,8 @@ impl Kernel {
                 let _sa_mask = if act_addr != 0 { a4 } else { 0 };
                 Ok(0)
             }
+
+            // TODO(by HUMAN): this signal should be handled per Thread instead of Task!
             SYS_SIGPROCMASK => {
                 let how = a0;
                 let set_addr = a1;
@@ -4938,9 +4952,9 @@ impl Kernel {
                         let new_set: u64 = set_addr as u64;
                         let mut mask = t.sig_mask.lock();
                         match how {
-                            0 => { *mask = (*mask | new_set) & !unmaskable; }
-                            1 => { *mask = *mask & !new_set; }
-                            2 => { *mask = new_set & !unmaskable; }
+                            0 => { mask.add_set(new_set.into()); }
+                            1 => { mask.remove_set(new_set.into()); }
+                            2 => { *mask = new_set.into(); }
                             _ => { return Err("einval"); }
                         }
                     }
